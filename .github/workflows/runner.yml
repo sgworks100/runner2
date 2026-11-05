@@ -41,16 +41,16 @@ jobs:
           console.log(`::add-mask::${key}`);
           appendFileSync(GITHUB_ENV, `RUNNER_KEY=${key}\n`);
           JS
+      - name: Install Chromium and runner dependencies
+        run: |
+          if [ -f runner/package.json ]; then cd runner; else cd github/runner; fi
+          npm ci
+          npx playwright install --with-deps chromium
       - name: Start visitor session
         # This repository can contain just github/ contents, or the entire project.
         env:
           SESSION_ID: ${{ inputs.session_id }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
-          AI_PROVIDER: ${{ vars.AI_PROVIDER || 'gemini' }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
         run: |
           if [ -f runner/runner.js ]; then node runner/runner.js; else node github/runner/runner.js; fi
       - name: Report runner completion
