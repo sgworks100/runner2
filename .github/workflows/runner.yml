@@ -1,0 +1,70 @@
+name: Independent Chatbot Runner
+run-name: chatbot-${{ inputs.session_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: Visitor session ID
+        required: true
+        type: string
+      slot_number:
+        description: Assigned runner slot
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: chatbot-slot-${{ inputs.slot_number }}
+  cancel-in-progress: false
+jobs:
+  chatbot:
+    # Re-running old sessions must never create a second session runner.
+    if: github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Derive session credential
+        env:
+          SESSION_ID: ${{ inputs.session_id }}
+          RUNNER_SECRET: ${{ secrets.RUNNER_SECRET }}
+        run: |
+          node --input-type=module <<'JS'
+          import { createHmac } from 'node:crypto';
+          import { appendFileSync } from 'node:fs';
+          const { SESSION_ID, RUNNER_SECRET, GITHUB_RUN_ID, GITHUB_ENV } = process.env;
+          if (!/^[a-f0-9-]{36}$/i.test(SESSION_ID) || !RUNNER_SECRET) throw new Error('Invalid configuration');
+          const key = createHmac('sha256', RUNNER_SECRET).update(`${SESSION_ID}:${GITHUB_RUN_ID}`).digest('hex');
+          console.log(`::add-mask::${key}`);
+          appendFileSync(GITHUB_ENV, `RUNNER_KEY=${key}\n`);
+          JS
+      - name: Start visitor session
+        # This repository can contain just github/ contents, or the entire project.
+        env:
+          SESSION_ID: ${{ inputs.session_id }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          AI_PROVIDER: ${{ vars.AI_PROVIDER || 'gemini' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+        run: |
+          if [ -f runner/runner.js ]; then node runner/runner.js; else node github/runner/runner.js; fi
+      - name: Report runner completion
+        if: always() && env.RUNNER_KEY != ''
+        env:
+          SESSION_ID: ${{ inputs.session_id }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+        run: |
+          node --input-type=module <<'JS'
+          const { WORKER_URL, RUNNER_KEY, SESSION_ID, GITHUB_RUN_ID } = process.env;
+          const response = await fetch(`${WORKER_URL.replace(/\/$/, '')}/internal/finished`, {
+            method: 'POST', signal: AbortSignal.timeout(15000),
+            headers: { 'Content-Type': 'application/json', 'X-Runner-Key': RUNNER_KEY, 'X-Run-Id': GITHUB_RUN_ID },
+            body: JSON.stringify({ sessionId: SESSION_ID })
+          });
+          if (!response.ok) throw new Error(`Completion callback failed: ${response.status}`);
+          JS
